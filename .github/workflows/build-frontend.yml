@@ -1,0 +1,30 @@
+---
+name: Build Frontend
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup node
+        uses: actions/setup-node@v3
+        with:
+          node-version: 12
+
+      - name: Checkout Project Repository
+        uses: actions/checkout@v2
+        with:
+          repository: ${{ github.repository }}
+          path: repository
+
+      - name: Build React frontend
+        run: |
+          cd repository/naturewatch_camera_server/static/client
+          npm i -y
+          npm run build
+          
+      - name: Archive build folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: repository/naturewatch_camera_server/static/client/build

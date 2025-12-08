@@ -33,6 +33,7 @@ These updates now should make it easier for community members to adapt and updat
 
 1. Either clone the repository and build software locally, fork the repository and run the Github Actions build, or download the latest commit build.
 2. Uncompress the built zip file and burn this to an SD card. We recommend using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) for this.
+3. Alternatively, flash the latest Raspberry Pi OS (Lite) image to an SD card and then follow the steps in [README_RASPBIAN_INSTALL.md](README_RASPBIAN_INSTALL.md) to install the software manually.
 
 ## Configuring the wifi setup
 
