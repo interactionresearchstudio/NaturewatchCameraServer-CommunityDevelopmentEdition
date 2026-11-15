@@ -2,17 +2,35 @@
 name: Build Image
 on: [push, pull_request, workflow_dispatch]
 
+env:
+  # Keep every apt invocation in every step non-interactive: a debconf prompt
+  # inside the chroot build stalls the job until it times out.
+  DEBIAN_FRONTEND: noninteractive
+
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
-      - name: Install Dependencies
+      - name: Checkout Project Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies and enable QEMU binfmt
         run: |
+          # Mount binfmt_misc BEFORE installing qemu-user-static, so the
+          # package's registrations actually land. Newer Debian/Ubuntu QEMU
+          # packages ship binfmt entries only as /usr/lib/binfmt.d/*.conf for
+          # systemd-binfmt (update-binfmts templates are gone).
+          mountpoint -q /proc/sys/fs/binfmt_misc || sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc
           sudo apt-get update
-          sudo apt-get install coreutils p7zip-full qemu-user-static python3-git
+          sudo apt-get install -y coreutils p7zip-full qemu-user-static qemu-system-arm binfmt-support python3-git
+          sudo systemctl restart systemd-binfmt || true
+          # The armhf chroot build needs the 32-bit ARM handler specifically.
+          test -e /proc/sys/fs/binfmt_misc/qemu-arm || { echo "qemu-arm binfmt handler is missing"; exit 1; }
+          echo "--- Registered binfmt handlers ---"
+          ls /proc/sys/fs/binfmt_misc/ | grep qemu
 
       - name: Checkout CustomPiOS
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           repository: "guysoft/CustomPiOS"
           ref: devel
@@ -24,13 +42,13 @@ jobs:
             CustomPiOS/src/modules/admin-toolkit/start_chroot_script
 
       - name: Checkout Project Repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
           path: repository
 
       - name: Setup node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: 12
 
@@ -61,11 +79,7 @@ jobs:
           cp -r /tmp/NaturewatchCameraServer repository/os/modules/naturewatchcamera/filesystem/home/pi
           rm -rf /tmp/NaturewatchCameraServer
           ls repository/os/modules/naturewatchcamera/filesystem/home/pi/NaturewatchCameraServer
-          
-      - name: Make package upgrade non-interactive
-        run: |
-          sed -i 's/apt-get upgrade -y/DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold/' \
-            CustomPiOS/src/modules/admin-toolkit/start_chroot_script
+
       - name: Build Image
         run: |
           export BASE_IMAGE_ENLARGEROOT=2000
@@ -76,35 +90,42 @@ jobs:
           sudo bash -x ./build_dist
 
       - name: Copy Output
-        run: cp ${{ github.workspace }}/repository/os/workspace/*lite.img mynaturewatch-camera.img
+        run: |
+          cp ${{ github.workspace }}/repository/os/workspace/*lite.img mynaturewatch-camera.img
+          # Free the intermediate copy: runners have limited disk and the boot
+          # test below makes its own per-board copies of the final image.
+          rm -f ${{ github.workspace }}/repository/os/workspace/*lite.img
+
+      - name: Test Image Boots Under QEMU
+        timeout-minutes: 45
+        run: |
+          # The script only ever mounts the passed image read-only and boots
+          # per-board copies of it, so the shipped file stays pristine. One
+          # boot per supported board family (Pi 3 A+/Zero 2 W, Pi 3 B, Pi 4).
+          bash os/test_image_boot.sh mynaturewatch-camera.img 600 qemu-boot
+
+      - name: Upload Boot Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-boot-logs
+          path: qemu-boot-*.log
+          if-no-files-found: ignore
 
       - name: Zip Output
         run: gzip mynaturewatch-camera.img
+
       - uses: actions/upload-artifact@v4
         with:
           name: mynaturewatch-camera.img.gz
           path: mynaturewatch-camera.img.gz
 
       - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
+        uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.ref }}
-          release_name: My Naturewatch Camera ${{ github.ref }}
+          name: My Naturewatch Camera ${{ github.ref }}
           draft: true
           prerelease: false
-
-      - name: Upload Release
-        id: upload-release-asset
-        uses: actions/upload-release-asset@v1
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
-          asset_path: mynaturewatch-camera.img.gz
-          asset_name: mynaturewatch-camera.img.gz
-          asset_content_type: application/octet-stream
+          files: mynaturewatch-camera.img.gz
