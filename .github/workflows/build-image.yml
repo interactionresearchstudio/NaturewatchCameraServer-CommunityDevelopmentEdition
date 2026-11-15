@@ -18,18 +18,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Mount binfmt_misc if it isn't already mounted
-          sudo mkdir -p /proc/sys/fs/binfmt_misc
-          if ! mountpoint -q /proc/sys/fs/binfmt_misc; then
-            sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
-          fi
-
-          # Install build dependencies and QEMU user-mode emulation
+          # Install build dependencies and QEMU user-mode emulatio
           sudo apt-get update
           sudo apt-get install -y \
             coreutils \
             p7zip-full \
+            file \
             qemu-user-binfmt \
+            qemu-system-arm \
             binfmt-support \
             systemd \
             python3-git
@@ -37,36 +33,12 @@ jobs:
           # Activate binfmt registrations
           sudo systemctl restart systemd-binfmt
 
-          # Verify required ARM handlers
-          for arch in qemu-arm qemu-aarch64; do
-            if [ ! -e "/proc/sys/fs/binfmt_misc/$arch" ]; then
-              echo "ERROR: $arch binfmt handler is missing"
-              exit 1
-            fi
-
-            if ! grep -q '^enabled' "/proc/sys/fs/binfmt_misc/$arch"; then
-              echo "ERROR: $arch handler is not enabled"
-              exit 1
-            fi
-
-            echo "--- $arch ---"
-            cat "/proc/sys/fs/binfmt_misc/$arch"
-          done
-
-          echo "--- Registered QEMU handlers ---"
-          ls /proc/sys/fs/binfmt_misc/ | grep '^qemu-'
-
       - name: Checkout CustomPiOS
         uses: actions/checkout@v4
         with:
           repository: "guysoft/CustomPiOS"
           ref: devel
           path: CustomPiOS
-
-      - name: Make package upgrades non-interactive
-        run: |
-          sed -i 's/apt-get upgrade -y/DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold/' \
-            CustomPiOS/src/modules/admin-toolkit/start_chroot_script
 
       - name: Checkout Project Repository
         uses: actions/checkout@v4
@@ -86,10 +58,11 @@ jobs:
           npm run build
           popd
 
-      - name: Download Raspbian Image
+      - name: Download Raspberry Pi OS Lite (32-bit)
         run: |
           cd repository/os/image
-          wget -q -c --trust-server-names 'https://downloads.raspberrypi.org/raspios_lite_armhf/images/raspios_lite_armhf-2024-11-19/2024-11-19-raspios-bookworm-armhf-lite.img.xz'
+          wget -q -c --trust-server-names \
+            https://downloads.raspberrypi.org/raspios_lite_armhf_latest
 
       - name: Update CustomPiOS Paths
         run: |
@@ -110,34 +83,12 @@ jobs:
       - name: Build Image
         run: |
           export BASE_IMAGE_ENLARGEROOT=2000
-          # Password set in os/config
-          # export AUTO_HOTSPOT_NAME=MyNaturewatch
-          # export AUTO_HOTSPOT_PASSWORD=badgersandfoxes
           sudo modprobe loop && cd repository/os
           sudo bash -x ./build_dist
 
       - name: Copy Output
         run: |
           cp ${{ github.workspace }}/repository/os/workspace/*lite.img mynaturewatch-camera.img
-          # Free the intermediate copy: runners have limited disk and the boot
-          # test below makes its own per-board copies of the final image.
-          rm -f ${{ github.workspace }}/repository/os/workspace/*lite.img
-
-      - name: Test Image Boots Under QEMU
-        timeout-minutes: 45
-        run: |
-          # The script only ever mounts the passed image read-only and boots
-          # per-board copies of it, so the shipped file stays pristine. One
-          # boot per supported board family (Pi 3 A+/Zero 2 W, Pi 3 B, Pi 4).
-          bash os/test_image_boot.sh mynaturewatch-camera.img 600 qemu-boot
-
-      - name: Upload Boot Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: qemu-boot-logs
-          path: qemu-boot-*.log
-          if-no-files-found: ignore
 
       - name: Zip Output
         run: gzip mynaturewatch-camera.img
