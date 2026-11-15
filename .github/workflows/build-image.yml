@@ -16,57 +16,45 @@ jobs:
 
       - name: Install Dependencies and enable QEMU binfmt
         run: |
-          # The armhf chroot build needs qemu-arm registered with the binfmt
-          # fix-binary (F) flag, and CustomPiOS chroots through
-          # /usr/bin/qemu-arm-static, which must be a REAL static binary.
-          # Ubuntu <= 24.04 ships that in qemu-user-static. From 26.04 that
-          # package is only a virtual shim: its handlers point at dynamic
-          # interpreters, which cannot be exec'd through binfmt inside a
-          # chroot (the dynamic loader path does not exist there), so we fall
-          # back to vendoring Debian's last static build and registering the
-          # handlers ourselves.
-          sudo modprobe binfmt_misc 2>/dev/null || true
-          mountpoint -q /proc/sys/fs/binfmt_misc || sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc
-          sudo apt-get update
-          sudo apt-get install -y coreutils p7zip-full file qemu-system-arm python3-git
-          if sudo apt-get install -y qemu-user-static; then
-            echo "Installed qemu-user-static (static emulators + binfmt handlers)."
-          else
-            echo "qemu-user-static has no installation candidate; vendoring static emulators from Debian."
-            tmpq=$(mktemp -d)
-            fetch_static_deb() {
-              # Prefer the newest 7.2 (bookworm) build; fall back to whatever
-              # else is in the pool if that series ever disappears.
-              deb=$(curl -fsSL http://deb.debian.org/debian/pool/main/q/qemu/ \
-                | grep -oE 'qemu-user-static_'"$1"'[^"]*_amd64\.deb' | sort -uV | tail -1)
-              [ -n "$deb" ] || return 1
-              curl -fsSL -o "$tmpq/qus.deb" "http://deb.debian.org/debian/pool/main/q/qemu/$deb"
-              dpkg-deb -x "$tmpq/qus.deb" "$tmpq/x"
-              file "$tmpq/x/usr/bin/qemu-arm-static" | grep -qE 'static-pie linked|statically linked'
-            }
-            fetch_static_deb '7\.2' || fetch_static_deb ''
-            file "$tmpq/x/usr/bin/qemu-arm-static" | grep -qE 'static-pie linked|statically linked' \
-              || { echo "Vendored qemu-arm-static is not a static binary; cannot build"; exit 1; }
-            sudo cp "$tmpq/x/usr/bin/qemu-arm-static" "$tmpq/x/usr/bin/qemu-aarch64-static" /usr/bin/
-            register_handler() {
-              local name="$1" magic="$2" mask="$3"
-              if [ -e "/proc/sys/fs/binfmt_misc/$name" ]; then
-                echo -1 | sudo tee "/proc/sys/fs/binfmt_misc/$name" >/dev/null
-              fi
-              printf ":$name:M::$magic:$mask:/usr/bin/$name-static:F" | sudo tee /proc/sys/fs/binfmt_misc/register >/dev/null
-            }
-            # Magic/mask values taken from Debian's qemu-user-static binfmt templates.
-            register_handler qemu-arm \
-              '\x7f\x45\x4c\x46\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00' \
-              '\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff'
-            register_handler qemu-aarch64 \
-              '\x7f\x45\x4c\x46\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00' \
-              '\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff'
+          set -euo pipefail
+
+          # Mount binfmt_misc if it isn't already mounted
+          sudo mkdir -p /proc/sys/fs/binfmt_misc
+          if ! mountpoint -q /proc/sys/fs/binfmt_misc; then
+            sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
           fi
-          # The armhf chroot build needs the 32-bit ARM handler specifically.
-          test -e /proc/sys/fs/binfmt_misc/qemu-arm || { echo "qemu-arm binfmt handler is missing"; exit 1; }
-          echo "--- Registered binfmt handlers ---"
-          ls /proc/sys/fs/binfmt_misc/ | grep qemu
+
+          # Install build dependencies and QEMU user-mode emulation
+          sudo apt-get update
+          sudo apt-get install -y \
+            coreutils \
+            p7zip-full \
+            qemu-user-binfmt \
+            binfmt-support \
+            systemd \
+            python3-git
+
+          # Activate binfmt registrations
+          sudo systemctl restart systemd-binfmt
+
+          # Verify required ARM handlers
+          for arch in qemu-arm qemu-aarch64; do
+            if [ ! -e "/proc/sys/fs/binfmt_misc/$arch" ]; then
+              echo "ERROR: $arch binfmt handler is missing"
+              exit 1
+            fi
+
+            if ! grep -q '^enabled' "/proc/sys/fs/binfmt_misc/$arch"; then
+              echo "ERROR: $arch handler is not enabled"
+              exit 1
+            fi
+
+            echo "--- $arch ---"
+            cat "/proc/sys/fs/binfmt_misc/$arch"
+          done
+
+          echo "--- Registered QEMU handlers ---"
+          ls /proc/sys/fs/binfmt_misc/ | grep '^qemu-'
 
       - name: Checkout CustomPiOS
         uses: actions/checkout@v4
