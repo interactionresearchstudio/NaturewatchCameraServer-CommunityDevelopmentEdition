@@ -1,19 +1,29 @@
 ---
 name: Build Image
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
 
 env:
-  # Keep every apt invocation in every step non-interactive: a debconf prompt
-  # inside the chroot build stalls the job until it times out.
-  DEBIAN_FRONTEND: noninteractive
+  # Base image used by CustomPiOS. Update both values together when upgrading.
+  BASE_IMAGE_DATE: "2026-10-06"
+  BASE_IMAGE_FILE: "2026-10-06-raspios-trixie-armhf-lite"
+  BASE_IMAGE_SHA256: "2c302771f34c67a0b7ae7aa2e0dcdd3eac660504be59193c011ba79d412e1632"
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Project Repository
-        uses: actions/checkout@v4
-
       - name: Install Dependencies and enable QEMU binfmt
         run: |
           set -euo pipefail
@@ -37,7 +47,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: "guysoft/CustomPiOS"
-          ref: devel
+          ref: 4fd13d6b65a54b2b528a4a52db214b2d4568392d
           path: CustomPiOS
 
       - name: Checkout Project Repository
@@ -49,20 +59,20 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v4
         with:
-          node-version: 12
+          node-version: 22
 
       - name: Build React frontend
         run: |
-          pushd repository/naturewatch_camera_server/static/client
-          npm i -y
-          npm run build
-          popd
+          cd repository/naturewatch_camera_server/static/client
+          npm ci
+          NODE_OPTIONS=--openssl-legacy-provider npm run build
 
       - name: Download Raspberry Pi OS Lite (32-bit)
         run: |
           cd repository/os/image
           wget -q -c --trust-server-names \
-            https://downloads.raspberrypi.org/raspios_lite_armhf_latest
+            https://downloads.raspberrypi.org/raspios_lite_armhf/images/raspios_lite_armhf-${{ env.BASE_IMAGE_DATE }}/${{ env.BASE_IMAGE_FILE }}.img.xz
+          echo "${BASE_IMAGE_SHA256}  ${BASE_IMAGE_FILE}.img.xz" | sha256sum --check
 
       - name: Update CustomPiOS Paths
         run: |
@@ -82,13 +92,13 @@ jobs:
 
       - name: Build Image
         run: |
-          export BASE_IMAGE_ENLARGEROOT=2000
-          sudo modprobe loop && cd repository/os
-          sudo bash -x ./build_dist
+          cd repository/os
+          sudo modprobe loop
+          sudo env BASE_IMAGE_ENLARGEROOT=2000 bash -x ./build_dist
 
       - name: Copy Output
         run: |
-          cp ${{ github.workspace }}/repository/os/workspace/*lite.img mynaturewatch-camera.img
+          cp ${{ github.workspace }}/repository/os/workspace/${{ env.BASE_IMAGE_FILE }}.img mynaturewatch-camera.img
 
       - name: Zip Output
         run: gzip mynaturewatch-camera.img
@@ -98,12 +108,24 @@ jobs:
           name: mynaturewatch-camera.img.gz
           path: mynaturewatch-camera.img.gz
 
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Image
+        uses: actions/download-artifact@v4
+        with:
+          name: mynaturewatch-camera.img.gz
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
         with:
-          tag_name: ${{ github.ref }}
-          name: My Naturewatch Camera ${{ github.ref }}
+          tag_name: ${{ github.ref_name }}
+          name: My Naturewatch Camera ${{ github.ref_name }}
           draft: true
           prerelease: false
           files: mynaturewatch-camera.img.gz
