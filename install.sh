@@ -41,6 +41,13 @@ echo -e "dtparam=act_led_activelow=on" >> $CONFIG_FILE
 echo -e "# Set CPU speed to 600MHz - fixes unstable WiFi issue" >> $CONFIG_FILE
 echo -e "arm_freq=600" >> $CONFIG_FILE
 
+# Run every apt invocation non-interactively: this script also runs inside the
+# CustomPiOS chroot during image builds, where a debconf prompt stalls forever.
+# force-confdef/confold also keeps end-user installs unattended (old configs
+# are kept instead of prompting); acceptable for this project's setup.
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS=(-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+
 # Copy to installation path
 mkdir -p $INSTALLATION_PATH/NaturewatchCameraServer >/dev/null 2>&1
 cp -r $DIR $INSTALLATION_PATH >/dev/null 2>&1
@@ -48,13 +55,13 @@ cp -r $DIR $INSTALLATION_PATH >/dev/null 2>&1
 # Update and upgrade
 apt-get clean
 apt-get update
-apt-get upgrade -y
-apt-get dist-upgrade -y
+apt-get upgrade "${APT_OPTS[@]}"
+apt-get dist-upgrade "${APT_OPTS[@]}"
 
 # Install extra packages (with specific versions) to avoid breaking the system:
 # apt list python3-picamera2 git python3-pip python3-libcamera libcap-dev ffmpeg python3-flask python3-numpy python3-opencv python3-kms++ --installed
-apt-get install -y python3-picamera2 --no-install-recommends
-apt-get install -y git python3-pip python3-libcamera libcap-dev ffmpeg python3-flask python3-numpy python3-opencv python3-kms++
+apt-get install "${APT_OPTS[@]}" python3-picamera2 --no-install-recommends
+apt-get install "${APT_OPTS[@]}" git python3-pip python3-libcamera libcap-dev ffmpeg python3-flask python3-numpy python3-opencv python3-kms++
 
 # Setup a venv
 python -m venv --system-site-packages ${INSTALLATION_PATH}/NaturewatchCameraServer/.venv
